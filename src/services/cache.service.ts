@@ -3,6 +3,9 @@ import Redis from 'ioredis';
 import { CircuitBreakerService } from './circuit-breaker.service';
 import { redisConfig } from '../config/redis.config';
 import { CacheResponse, CacheSource } from '../interfaces/cache-response.interface';
+import { RetryService } from './retry-service';
+import * as msgpack from 'msgpack-lite';
+
 
 interface LocalCacheEntry {
   value: any;
@@ -18,7 +21,7 @@ export class CacheService {
   private readonly localCache: Map<string, LocalCacheEntry>;
   private isConnected = false;
   private readonly localCacheTTL = 300000; // 5 minutos
-  private readonly cleanupInterval = 60000; // 1 minuto
+  private readonly cleanupInterval = 30000; // 1 minuto
 
   private readonly healthCheckInterval = 30000; // 30 segundos
   private lastHealthCheckTime = 0;
@@ -29,8 +32,11 @@ export class CacheService {
     lastCheckTime: 0
   };
 
-  constructor(private readonly circuitBreaker: CircuitBreakerService) {
-    this.redis = new Redis(redisConfig);
+  constructor(
+    private readonly circuitBreaker: CircuitBreakerService,
+    private readonly retryService: RetryService
+  ) {
+    this.redis = new Redis(process.env.REDIS_URL, redisConfig);
     this.localCache = new Map();
     this.setupRedisListeners();
     this.startCleanupInterval();
@@ -82,67 +88,135 @@ export class CacheService {
     }
   }
 
+  
   async get<T>(key: string): Promise<CacheResponse<T>> {
-    return this.circuitBreaker.execute<T>(
-      async () => {
-        try {
-          const value = await this.redis.get(key);
-          if (value) {
-            const parsed = JSON.parse(value);
-            await this.setLocalCache(key, parsed);
-            this.logger.debug(`⚡ Cache hit en Redis: ${key}`);
+    return this.retryService.execute(
+      () => this.circuitBreaker.execute<T>(
+        async () => {
+          try {
+            const value = await this.redis.get(key);
+            if (value) {
+              const parsed = JSON.parse(value);
+              await this.setLocalCache(key, parsed);
+              this.logger.debug(`⚡ Cache hit en Redis: ${key}`);
+              return {
+                success: true,
+                data: parsed,
+                source: 'redis',
+                details: {
+                  cached: true,
+                  responseTime: Date.now() - performance.now(),
+                  lastCheck: new Date().toISOString()
+                }
+              };
+            }
+            this.logger.debug(`❓ Cache miss en Redis: ${key}`);
+            return { 
+              success: false, 
+              source: 'none',
+              details: {
+                cached: false,
+                lastCheck: new Date().toISOString()
+              }
+            };
+          } catch (error) {
+            this.logger.error(`🔥 Error en operación Redis para key ${key}:`, error.stack);
+            throw error;
+          }
+        },
+        async () => {
+          const localValue = this.getFromLocalCache(key);
+          if (localValue) {
+            this.logger.debug(`💾 Cache hit local: ${key}`);
             return {
               success: true,
-              data: parsed,
-              source: 'redis'
+              data: localValue,
+              source: 'local',
+              details: {
+                cached: true,
+                responseTime: Date.now() - performance.now(),
+                lastCheck: new Date().toISOString()
+              }
             };
           }
-          this.logger.debug(`❓ Cache miss en Redis: ${key}`);
-          return { success: false, source: 'none' };
-        } catch (error) {
-          this.logger.error(`🔥 Error en operación Redis para key ${key}:`, error.stack);
-          throw error;
-        }
-      },
-      async () => {
-        const localValue = this.getFromLocalCache(key);
-        if (localValue) {
-          this.logger.debug(`💾 Cache hit local: ${key}`);
-          return {
-            success: true,
-            data: localValue,
-            source: 'local'
+          return { 
+            success: false, 
+            source: 'none',
+            details: {
+              cached: false,
+              lastCheck: new Date().toISOString()
+            }
           };
-        }
-        return { success: false, source: 'none' };
-      },
-      `get:${key}`
+        },
+        `get:${key}`
+      ),
+      {
+        maxAttempts: 3,
+        context: `get:${key}`,
+        retryableErrors: [
+          /ECONNREFUSED/,
+          /ETIMEDOUT/,
+          /ECONNRESET/,
+          'CONNECTION_ERROR',
+          'REDIS_NOT_CONNECTED'
+        ]
+      }
     );
   }
 
+ 
   async set(key: string, value: any, ttl?: number): Promise<CacheResponse> {
-    return this.circuitBreaker.execute(
-      async () => {
-        try {
-          const serialized = JSON.stringify(value);
-          if (ttl) {
-            await this.redis.setex(key, ttl, serialized);
-          } else {
-            await this.redis.set(key, serialized);
+    return this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        async () => {
+          try {
+
+            const serialized = JSON.stringify(value);
+            if (ttl) {
+              await this.redis.setex(key, ttl, serialized);
+            } else {
+              await this.redis.set(key, serialized);
+            }
+            await this.setLocalCache(key, value, ttl);
+            this.logger.debug(`💾 Cache establecido en Redis: ${key}`);
+            return { 
+              success: true, 
+              source: 'redis',
+              details: {
+                cached: true,
+                lastCheck: new Date().toISOString(),
+                responseTime: Date.now() - performance.now()
+              }
+            };
+          } catch (error) {
+            this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
+            throw error;
           }
+        },
+        async () => {
           await this.setLocalCache(key, value, ttl);
-          this.logger.debug(`💾 Cache establecido en Redis: ${key}`);
-          return { success: true, source: 'redis' };
-        } catch (error) {
-          this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
-          throw error;
-        }
-      },
-      async () => {
-        await this.setLocalCache(key, value, ttl);
-        return { success: true, source: 'local' };
-      },
-      `set:${key}`
+          return { 
+            success: true, 
+            source: 'local',
+            details: {
+              cached: true,
+              lastCheck: new Date().toISOString()
+            }
+          };
+        },
+        `set:${key}`
+      ),
+      {
+        maxAttempts: 3,
+        context: `set:${key}`,
+        retryableErrors: [
+          /ECONNREFUSED/,
+          /ETIMEDOUT/,
+          /ECONNRESET/,
+          'CONNECTION_ERROR',
+          'REDIS_NOT_CONNECTED'
+        ]
+      }
     );
   }
 

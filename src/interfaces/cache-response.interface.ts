@@ -12,5 +12,7 @@ export interface CacheResponse<T = unknown> {
     consecutiveFailures?: number;
     lastError?: string;
     lastSuccessful?: string;
+    attempts?: number;  // Añadimos este campo
+    context?: string;   // También añadimos este para el contexto
   };
 }

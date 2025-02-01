@@ -4,10 +4,10 @@ import * as joi from 'joi';
 interface EnvVars {
     PORT: number;
     RABBITMQ_SERVERS: string[];
-    REDIS_HOST: string;
-    REDIS_PORT: number;
-    REDIS_PASSWORD: string;
-    REDIS_USERNAME?: string;
+    // REDIS_HOST: string;
+    // REDIS_PORT: number;
+    // REDIS_PASSWORD: string;
+    // REDIS_USERNAME?: string;
     CIRCUIT_BREAKER_THRESHOLD?: number;
     CIRCUIT_BREAKER_TIMEOUT?: number;
 }
@@ -15,10 +15,10 @@ interface EnvVars {
 const envsSchema = joi.object({
     PORT: joi.number().required(),
     RABBITMQ_SERVERS: joi.array().items(joi.string()).required(),
-    REDIS_HOST: joi.string().required(),
-    REDIS_PORT: joi.number().default(6379),
-    REDIS_PASSWORD: joi.string().required(),
-    REDIS_USERNAME: joi.string().optional(),
+    // REDIS_HOST: joi.string().required(),
+    // REDIS_PORT: joi.number().default(6379),
+    // REDIS_PASSWORD: joi.string().required(),
+    // REDIS_USERNAME: joi.string().optional(),
     CIRCUIT_BREAKER_THRESHOLD: joi.number().default(5),
     CIRCUIT_BREAKER_TIMEOUT: joi.number().default(30000),
 })
@@ -42,13 +42,15 @@ export const envs = {
     port: envVars.PORT,
     rabbitmqServers: envVars.RABBITMQ_SERVERS,
     redis: {
-        host: envVars.REDIS_HOST,
-        port: envVars.REDIS_PORT,
-        password: envVars.REDIS_PASSWORD,
-        username: envVars.REDIS_USERNAME,
+        url: process.env.REDIS_URL, // Añadir soporte para URL completa
+        // host: envVars.REDIS_HOST,
+        // port: envVars.REDIS_PORT,
+        // password: envVars.REDIS_PASSWORD,
+        // username: envVars.REDIS_USERNAME,
     },
     circuitBreaker: {
         threshold: envVars.CIRCUIT_BREAKER_THRESHOLD,
         timeout: envVars.CIRCUIT_BREAKER_TIMEOUT,
     }
 }
+

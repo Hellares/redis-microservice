@@ -3,6 +3,7 @@ import { Ctx, MessagePattern, Payload, RmqContext, RpcException } from '@nestjs/
 import { CacheService } from '../services/cache.service';
 import { CircuitBreakerService } from '../services/circuit-breaker.service';
 import { CacheResponse } from '../interfaces/cache-response.interface';
+import { RetryService } from 'src/services/retry-service';
 
 @Controller()
 export class CacheController {
@@ -11,8 +12,33 @@ export class CacheController {
   constructor(
     private readonly cacheService: CacheService,
     private readonly circuitBreaker: CircuitBreakerService,
+    private readonly retryService: RetryService, // Agregamos RetryService
   ) {}
 
+  // @MessagePattern({ cmd: 'cache.get' })
+  // async get(@Payload() key: string, @Ctx() context: RmqContext) {
+  //   const channel = context.getChannelRef();
+  //   const originalMsg = context.getMessage();
+
+  //   try {
+  //     this.logger.debug(`Getting cache for key: ${key}`);
+  //     const result = await this.circuitBreaker.execute(
+  //       () => this.cacheService.get(key),
+  //       async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+  //       `get:${key}`
+  //     );
+
+  //     await this.safeAck(channel, originalMsg);
+  //     return result;
+  //   } catch (error) {
+  //     await this.safeAck(channel, originalMsg);
+  //     this.logger.error(`Error getting cache for key ${key}:`, error);
+  //     throw new RpcException({
+  //       message: 'Error retrieving from cache',
+  //       error: error.message,
+  //     });
+  //   }
+  // }
   @MessagePattern({ cmd: 'cache.get' })
   async get(@Payload() key: string, @Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -20,10 +46,16 @@ export class CacheController {
 
     try {
       this.logger.debug(`Getting cache for key: ${key}`);
-      const result = await this.circuitBreaker.execute(
-        () => this.cacheService.get(key),
-        async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-        `get:${key}`
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.get(key),
+          async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+          `get:${key}`
+        ),
+        {
+          context: `controller:get:${key}`,
+          maxAttempts: 3
+        }
       );
 
       await this.safeAck(channel, originalMsg);
@@ -38,6 +70,31 @@ export class CacheController {
     }
   }
 
+  // @MessagePattern({ cmd: 'cache.set' })
+  // async set(@Payload() data: { key: string; value: any; ttl?: number }, @Ctx() context: RmqContext) {
+  //   const channel = context.getChannelRef();
+  //   const originalMsg = context.getMessage();
+
+  //   try {
+  //     this.logger.debug(`Setting cache for key: ${data.key}`);
+  //     const result = await this.circuitBreaker.execute(
+  //       () => this.cacheService.set(data.key, data.value, data.ttl),
+  //       async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+  //       `set:${data.key}`
+  //     );
+
+  //     await this.safeAck(channel, originalMsg);
+  //     return result;
+  //   } catch (error) {
+  //     await this.safeAck(channel, originalMsg);
+  //     this.logger.error(`Error setting cache for key ${data.key}:`, error);
+  //     throw new RpcException({
+  //       message: 'Error setting cache',
+  //       error: error.message,
+  //     });
+  //   }
+  // }
+
   @MessagePattern({ cmd: 'cache.set' })
   async set(@Payload() data: { key: string; value: any; ttl?: number }, @Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -45,10 +102,16 @@ export class CacheController {
 
     try {
       this.logger.debug(`Setting cache for key: ${data.key}`);
-      const result = await this.circuitBreaker.execute(
-        () => this.cacheService.set(data.key, data.value, data.ttl),
-        async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-        `set:${data.key}`
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.set(data.key, data.value, data.ttl),
+          async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+          `set:${data.key}`
+        ),
+        {
+          context: `controller:set:${data.key}`,
+          maxAttempts: 3
+        }
       );
 
       await this.safeAck(channel, originalMsg);
@@ -65,6 +128,58 @@ export class CacheController {
 
  
 
+  // @MessagePattern({ cmd: 'cache.health' })
+  // async healthCheck(@Ctx() context: RmqContext) {
+  //   const channel = context.getChannelRef();
+  //   const originalMsg = context.getMessage();
+  
+  //   try {
+  //     this.logger.debug('📝 Procesando health check request');
+    
+  //     const healthResult = await this.circuitBreaker.execute(
+  //       () => this.cacheService.healthCheck(),
+  //       async () => ({ 
+  //         success: false, 
+  //         source: 'none', 
+  //         data: false 
+  //       }),
+  //       'health-check'
+  //     );
+    
+  //     await this.safeAck(channel, originalMsg);
+    
+  //     const response = {
+  //       status: healthResult.data ? 'healthy' : 'unhealthy',
+  //       circuitBreaker: this.circuitBreaker.getState(),
+  //       timestamp: new Date().toISOString(),
+  //       success: healthResult.success,
+  //       source: healthResult.source,
+  //       microserviceConnection: true,
+  //       details: {
+  //         redisConnected: healthResult.data,
+  //         circuitBreakerState: this.circuitBreaker.getState(),
+  //         lastCheck: new Date().toISOString()
+  //       }
+  //     };
+    
+  //     this.logger.debug('✅ Health check response:', response);
+  //     return response;
+    
+  //   } catch (error) {
+  //     await this.safeAck(channel, originalMsg);
+      
+  //     const errorResponse = {
+  //       status: 'unhealthy',
+  //       error: error.message || 'Error interno en el servicio',
+  //       timestamp: new Date().toISOString(),
+  //       microserviceConnection: false,
+  //       circuitBreaker: this.circuitBreaker.getState()
+  //     };
+    
+  //     this.logger.error('❌ Health check fallido:', errorResponse);
+  //     return errorResponse;
+  //   }
+  // }
   @MessagePattern({ cmd: 'cache.health' })
   async healthCheck(@Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -73,14 +188,21 @@ export class CacheController {
     try {
       this.logger.debug('📝 Procesando health check request');
     
-      const healthResult = await this.circuitBreaker.execute(
-        () => this.cacheService.healthCheck(),
-        async () => ({ 
-          success: false, 
-          source: 'none', 
-          data: false 
-        }),
-        'health-check'
+      const healthResult = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.healthCheck(),
+          async () => ({ 
+            success: false, 
+            source: 'none', 
+            data: false 
+          }),
+          'health-check'
+        ),
+        {
+          context: 'controller:health-check',
+          maxAttempts: 2, // Menos intentos para health check
+          initialBackoff: 500 // Backoff más corto para health check
+        }
       );
     
       await this.safeAck(channel, originalMsg);
@@ -95,13 +217,13 @@ export class CacheController {
         details: {
           redisConnected: healthResult.data,
           circuitBreakerState: this.circuitBreaker.getState(),
-          lastCheck: new Date().toISOString()
+          lastCheck: new Date().toISOString(),
+          retryAttempts: healthResult.details?.attempts
         }
       };
     
       this.logger.debug('✅ Health check response:', response);
       return response;
-    
     } catch (error) {
       await this.safeAck(channel, originalMsg);
       
@@ -118,6 +240,31 @@ export class CacheController {
     }
   }
 
+  // @MessagePattern({ cmd: 'cache.clear' })
+  // async clearCache(@Ctx() context: RmqContext) {
+  //   const channel = context.getChannelRef();
+  //   const originalMsg = context.getMessage();
+
+  //   try {
+  //     this.logger.debug('Clearing all cache');
+  //     const result = await this.circuitBreaker.execute(
+  //       () => this.cacheService.clearCache(),
+  //       async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+  //       'clear-cache'
+  //     );
+
+  //     await this.safeAck(channel, originalMsg);
+  //     return result;
+  //   } catch (error) {
+  //     await this.safeAck(channel, originalMsg);
+  //     this.logger.error('Error clearing cache:', error);
+  //     throw new RpcException({
+  //       message: 'Error clearing cache',
+  //       error: error.message,
+  //     });
+  //   }
+  // }
+
   @MessagePattern({ cmd: 'cache.clear' })
   async clearCache(@Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -125,10 +272,16 @@ export class CacheController {
 
     try {
       this.logger.debug('Clearing all cache');
-      const result = await this.circuitBreaker.execute(
-        () => this.cacheService.clearCache(),
-        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
-        'clear-cache'
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.clearCache(),
+          async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+          'clear-cache'
+        ),
+        {
+          context: 'controller:clear-cache',
+          maxAttempts: 2 // Menos intentos para clear cache
+        }
       );
 
       await this.safeAck(channel, originalMsg);
@@ -150,10 +303,16 @@ export class CacheController {
 
     try {
       this.logger.debug(`Deleting cache for key: ${key}`);
-      const result = await this.circuitBreaker.execute(
-        () => this.cacheService.delete(key),
-        async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-        `delete:${key}`
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.delete(key),
+          async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+          `delete:${key}`
+        ),
+        {
+          context: `controller:delete:${key}`,
+          maxAttempts: 3
+        }
       );
 
       await this.safeAck(channel, originalMsg);
@@ -174,10 +333,16 @@ export class CacheController {
     const originalMsg = context.getMessage();
 
     try {
-      const result = await this.circuitBreaker.execute(
-        () => this.cacheService.get(key),
-        async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-        `exists:${key}`
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.get(key),
+          async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
+          `exists:${key}`
+        ),
+        {
+          context: `controller:exists:${key}`,
+          maxAttempts: 2
+        }
       );
 
       await this.safeAck(channel, originalMsg);
