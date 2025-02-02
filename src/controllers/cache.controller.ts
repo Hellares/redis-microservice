@@ -240,30 +240,6 @@ export class CacheController {
     }
   }
 
-  // @MessagePattern({ cmd: 'cache.clear' })
-  // async clearCache(@Ctx() context: RmqContext) {
-  //   const channel = context.getChannelRef();
-  //   const originalMsg = context.getMessage();
-
-  //   try {
-  //     this.logger.debug('Clearing all cache');
-  //     const result = await this.circuitBreaker.execute(
-  //       () => this.cacheService.clearCache(),
-  //       async () => ({ success: false, source: 'none' } as CacheResponse<void>),
-  //       'clear-cache'
-  //     );
-
-  //     await this.safeAck(channel, originalMsg);
-  //     return result;
-  //   } catch (error) {
-  //     await this.safeAck(channel, originalMsg);
-  //     this.logger.error('Error clearing cache:', error);
-  //     throw new RpcException({
-  //       message: 'Error clearing cache',
-  //       error: error.message,
-  //     });
-  //   }
-  // }
 
   @MessagePattern({ cmd: 'cache.clear' })
   async clearCache(@Ctx() context: RmqContext) {

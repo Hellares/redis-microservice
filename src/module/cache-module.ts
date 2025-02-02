@@ -6,11 +6,12 @@ import { RetryService } from "src/services/retry-service";
 
 @Module({
   imports: [],
-  controllers:[CacheController],
+  controllers:[CacheController,],
   providers: [
     CacheService, 
     CircuitBreakerService,
-    RetryService
+    RetryService, 
+    
   ],
   exports: [CacheService]
 })
