@@ -15,30 +15,7 @@ export class CacheController {
     private readonly retryService: RetryService, // Agregamos RetryService
   ) {}
 
-  // @MessagePattern({ cmd: 'cache.get' })
-  // async get(@Payload() key: string, @Ctx() context: RmqContext) {
-  //   const channel = context.getChannelRef();
-  //   const originalMsg = context.getMessage();
-
-  //   try {
-  //     this.logger.debug(`Getting cache for key: ${key}`);
-  //     const result = await this.circuitBreaker.execute(
-  //       () => this.cacheService.get(key),
-  //       async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-  //       `get:${key}`
-  //     );
-
-  //     await this.safeAck(channel, originalMsg);
-  //     return result;
-  //   } catch (error) {
-  //     await this.safeAck(channel, originalMsg);
-  //     this.logger.error(`Error getting cache for key ${key}:`, error);
-  //     throw new RpcException({
-  //       message: 'Error retrieving from cache',
-  //       error: error.message,
-  //     });
-  //   }
-  // }
+  
   @MessagePattern({ cmd: 'cache.get' })
   async get(@Payload() key: string, @Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -70,31 +47,7 @@ export class CacheController {
     }
   }
 
-  // @MessagePattern({ cmd: 'cache.set' })
-  // async set(@Payload() data: { key: string; value: any; ttl?: number }, @Ctx() context: RmqContext) {
-  //   const channel = context.getChannelRef();
-  //   const originalMsg = context.getMessage();
-
-  //   try {
-  //     this.logger.debug(`Setting cache for key: ${data.key}`);
-  //     const result = await this.circuitBreaker.execute(
-  //       () => this.cacheService.set(data.key, data.value, data.ttl),
-  //       async () => ({ success: false, source: 'none' } as CacheResponse<unknown>),
-  //       `set:${data.key}`
-  //     );
-
-  //     await this.safeAck(channel, originalMsg);
-  //     return result;
-  //   } catch (error) {
-  //     await this.safeAck(channel, originalMsg);
-  //     this.logger.error(`Error setting cache for key ${data.key}:`, error);
-  //     throw new RpcException({
-  //       message: 'Error setting cache',
-  //       error: error.message,
-  //     });
-  //   }
-  // }
-
+  
   @MessagePattern({ cmd: 'cache.set' })
   async set(@Payload() data: { key: string; value: any; ttl?: number }, @Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
@@ -127,59 +80,6 @@ export class CacheController {
   }
 
  
-
-  // @MessagePattern({ cmd: 'cache.health' })
-  // async healthCheck(@Ctx() context: RmqContext) {
-  //   const channel = context.getChannelRef();
-  //   const originalMsg = context.getMessage();
-  
-  //   try {
-  //     this.logger.debug('📝 Procesando health check request');
-    
-  //     const healthResult = await this.circuitBreaker.execute(
-  //       () => this.cacheService.healthCheck(),
-  //       async () => ({ 
-  //         success: false, 
-  //         source: 'none', 
-  //         data: false 
-  //       }),
-  //       'health-check'
-  //     );
-    
-  //     await this.safeAck(channel, originalMsg);
-    
-  //     const response = {
-  //       status: healthResult.data ? 'healthy' : 'unhealthy',
-  //       circuitBreaker: this.circuitBreaker.getState(),
-  //       timestamp: new Date().toISOString(),
-  //       success: healthResult.success,
-  //       source: healthResult.source,
-  //       microserviceConnection: true,
-  //       details: {
-  //         redisConnected: healthResult.data,
-  //         circuitBreakerState: this.circuitBreaker.getState(),
-  //         lastCheck: new Date().toISOString()
-  //       }
-  //     };
-    
-  //     this.logger.debug('✅ Health check response:', response);
-  //     return response;
-    
-  //   } catch (error) {
-  //     await this.safeAck(channel, originalMsg);
-      
-  //     const errorResponse = {
-  //       status: 'unhealthy',
-  //       error: error.message || 'Error interno en el servicio',
-  //       timestamp: new Date().toISOString(),
-  //       microserviceConnection: false,
-  //       circuitBreaker: this.circuitBreaker.getState()
-  //     };
-    
-  //     this.logger.error('❌ Health check fallido:', errorResponse);
-  //     return errorResponse;
-  //   }
-  // }
   @MessagePattern({ cmd: 'cache.health' })
   async healthCheck(@Ctx() context: RmqContext) {
     const channel = context.getChannelRef();
