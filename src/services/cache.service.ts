@@ -278,8 +278,10 @@ private readonly MIN_CACHE_SIZE = Math.floor(this.MAX_LOCAL_CACHE_SIZE * 0.8); /
             let finalData: Buffer;
             let compressionApplied = false;
             
-            if (encoded.length > 1024) {
-              finalData = await gzip(encoded);
+            // if (encoded.length > 1024) {
+            //   finalData = await gzip(encoded, { level: this.config.compression.level });
+            if (encoded.length > 5120) {
+              finalData = await gzip(encoded, { level: 4 });
               compressionApplied = true;
               this.updateCompressionMetrics(encoded.length, finalData.length);
             } else {

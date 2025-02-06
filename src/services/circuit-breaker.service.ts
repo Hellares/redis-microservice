@@ -7,8 +7,8 @@ export class CircuitBreakerService {
   private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
   private failures = 0;
   private lastFailureTime: number = 0;
-  private readonly threshold = 2;
-  private readonly resetTimeout = 10000;
+  private readonly threshold = 3;
+  private readonly resetTimeout = 5000;
   
   private metrics = {
     totalCalls: 0,
