@@ -7,7 +7,6 @@ import { RetryService } from './retry-service';
 import * as msgpack from 'msgpack-lite';
 import { promisify } from 'util';
 import * as zlib from 'zlib';
-//import QuickLRU from '@alloc/quick-lru';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -504,6 +503,29 @@ private readonly MIN_CACHE_SIZE = Math.floor(this.MAX_LOCAL_CACHE_SIZE * 0.8); /
     };
   }
 
-  
+  async clearByPattern(pattern: string): Promise<CacheResponse<void>> {
+    try {
+      // Usar SCAN en lugar de KEYS para producción
+      const keys = await this.redis.keys(pattern);
+      if (keys.length > 0) {
+        await this.redis.del(...keys);
+      }
+      
+      this.logger.log(`🧹 Limpiadas ${keys.length} keys con patrón: ${pattern}`);
+      
+      return {
+        success: true,
+        source: 'redis',
+        details: {
+          responseTime: 0,
+          lastCheck: new Date().toISOString(),
+          keysDeleted: keys.length
+        }
+      };
+    } catch (error) {
+      this.logger.error(`❌ Error limpiando keys con patrón ${pattern}:`, error);
+      throw error;
+    }
+  }
   
 }

@@ -233,6 +233,37 @@ export class CacheController {
     }
   }
 
+  @MessagePattern({ cmd: 'cache.clearPattern' })
+  async clearPattern(@Payload() pattern: string, @Ctx() context: RmqContext) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+
+    try {
+      this.logger.debug(`Limpiando cache por patrón: ${pattern}`);
+      const result = await this.retryService.execute(
+        () => this.circuitBreaker.execute(
+          () => this.cacheService.clearByPattern(pattern),
+          async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+          `clear-pattern:${pattern}`
+        ),
+        {
+          context: `controller:clear-pattern:${pattern}`,
+          maxAttempts: 2
+        }
+      );
+
+      await this.safeAck(channel, originalMsg);
+      return result;
+    } catch (error) {
+      await this.safeAck(channel, originalMsg);
+      this.logger.error(`Error limpiando cache por patrón ${pattern}:`, error);
+      throw new RpcException({
+        message: 'Error limpiando cache por patrón',
+        error: error.message,
+      });
+    }
+  }
+
   private async safeAck(channel: any, message: any): Promise<void> {
     try {
       if (channel?.ack && message) {
