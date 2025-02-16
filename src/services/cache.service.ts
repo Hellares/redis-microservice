@@ -27,8 +27,8 @@ export class CacheService {
   private readonly localCacheTTL = 300000; // 5 minutos
   private readonly cleanupInterval = 30000; // 1 minuto
   private readonly config: RedisConfigWithCompression;
-private readonly MAX_LOCAL_CACHE_SIZE = 1000; // Configurable según necesidades
-private readonly MIN_CACHE_SIZE = Math.floor(this.MAX_LOCAL_CACHE_SIZE * 0.8); // Mantener 80% después de limpieza
+  private readonly MAX_LOCAL_CACHE_SIZE = 1000; // Configurable según necesidades
+  private readonly MIN_CACHE_SIZE = Math.floor(this.MAX_LOCAL_CACHE_SIZE * 0.8); // Mantener 80% después de limpieza
   
 
   private lastHealthCheckTime = 0;

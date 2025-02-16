@@ -73,8 +73,8 @@ export const compressionConfig: CompressionConfig = {
 //   lazyConnect: true,
 //   compression: compressionConfig
 export const redisConfig: RedisOptions & { compression: CompressionConfig } = {
-  connectTimeout: 3000,
-  commandTimeout: 2000,
+  connectTimeout: 4000,
+  commandTimeout: 3000,
   maxRetriesPerRequest: 2,
   retryStrategy: (times: number) => {
     if (times > 2) {
