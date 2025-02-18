@@ -21,6 +21,7 @@ interface LocalCacheEntry {
 @Injectable()
 export class CacheService {
   private readonly logger = new Logger(CacheService.name);
+  private readonly isDevelopment = process.env.NODE_ENV !== 'production';
   private readonly redis: Redis;
   private readonly localCache: Map<string, LocalCacheEntry>;
   private isConnected = false;
@@ -29,6 +30,8 @@ export class CacheService {
   private readonly config: RedisConfigWithCompression;
   private readonly MAX_LOCAL_CACHE_SIZE = 1000; // Configurable según necesidades
   private readonly MIN_CACHE_SIZE = Math.floor(this.MAX_LOCAL_CACHE_SIZE * 0.8); // Mantener 80% después de limpieza
+  private readonly HEALTH_CHECK_TIMEOUT = 3000; // 3 segundos
+  private readonly MAX_CONSECUTIVE_FAILURES = 3;
   
 
   private lastHealthCheckTime = 0;
@@ -36,7 +39,9 @@ export class CacheService {
     lastSuccessful: false,
     consecutiveFailures: 0,
     lastError: null as Error | null,
-    lastCheckTime: 0
+    lastCheckTime: 0,
+    lastResponse: null as any,
+    degradedPerformance: false
   };
 
   private compressionMetrics = {
@@ -57,28 +62,54 @@ export class CacheService {
     this.startCleanupInterval();
   }
 
+  // private setupRedisListeners() {
+  //   this.redis.on('error', (error) => {
+  //     if (this.isConnected) {
+  //       this.isConnected = false;
+  //       this.logger.error(`❌ Conexión perdida con Redis: ${error.message}`, error.stack);
+  //       // Intentar reconectar automáticamente
+  //       setTimeout(() => this.redis.connect(), 5000);
+  //     }
+  //   });
+
+  //   this.redis.on('connect', () => {
+  //     if (!this.isConnected) {
+  //       this.isConnected = true;
+  //       this.logger.log('✅ Conexión establecida con Redis');
+  //     }
+  //   });
+
+  //   this.redis.on('ready', () => {
+  //     this.isConnected = true;
+  //     this.logger.log('🟢 Redis listo para operaciones');
+  //   });
+  // }
   private setupRedisListeners() {
     this.redis.on('error', (error) => {
       if (this.isConnected) {
         this.isConnected = false;
-        this.logger.error(`❌ Conexión perdida con Redis: ${error.message}`, error.stack);
-        // Intentar reconectar automáticamente
-        setTimeout(() => this.redis.connect(), 5000);
+        this.healthCheckStatus.degradedPerformance = true;
+        // Solo logueamos errores de conexión cuando realmente perdemos la conexión
+        this.logger.error(`❌ Conexión perdida con Redis: ${error.message}`);
       }
     });
 
     this.redis.on('connect', () => {
       if (!this.isConnected) {
         this.isConnected = true;
+        // Solo logueamos la reconexión si estábamos desconectados
         this.logger.log('✅ Conexión establecida con Redis');
       }
     });
 
     this.redis.on('ready', () => {
-      this.isConnected = true;
-      this.logger.log('🟢 Redis listo para operaciones');
+      if (this.healthCheckStatus.degradedPerformance) {
+        this.logger.log('🟢 Redis recuperado y listo para operaciones');
+        this.healthCheckStatus.degradedPerformance = false;
+      }
     });
   }
+
 
   private startCleanupInterval() {
     setInterval(() => {
@@ -168,13 +199,39 @@ export class CacheService {
     );
   }
 
+  // async get<T>(key: string): Promise<CacheResponse<T>> {
+  //   // Intentamos obtener primero desde el caché local
+  //   const localValue = this.getFromLocalCache(key);
+  //   if (localValue) {
+  //     this.logger.debug(`💾 Cache hit local: ${key}`);
+  
+  //     // Consultamos Redis en segundo plano sin bloquear la respuesta
+  //     this.fetchFromRedis<T>(key).catch((err) =>
+  //       this.logger.warn(`⚠️ Error actualizando desde Redis: ${err.message}`)
+  //     );
+  
+  //     return {
+  //       success: true,
+  //       data: localValue,
+  //       source: 'local',
+  //       details: {
+  //         cached: true,
+  //         lastCheck: new Date().toISOString()
+  //       }
+  //     };
+  //   }
+  
+  //   // Si no hay caché local, esperamos la respuesta de Redis
+  //   return this.fetchFromRedis<T>(key);
+  // }
+
   async get<T>(key: string): Promise<CacheResponse<T>> {
-    // Intentamos obtener primero desde el caché local
     const localValue = this.getFromLocalCache(key);
     if (localValue) {
-      this.logger.debug(`💾 Cache hit local: ${key}`);
+      if (this.isDevelopment) {
+        this.logger.debug(`⚡ Cache local: ${key}`);
+      }
   
-      // Consultamos Redis en segundo plano sin bloquear la respuesta
       this.fetchFromRedis<T>(key).catch((err) =>
         this.logger.warn(`⚠️ Error actualizando desde Redis: ${err.message}`)
       );
@@ -190,70 +247,140 @@ export class CacheService {
       };
     }
   
-    // Si no hay caché local, esperamos la respuesta de Redis
     return this.fetchFromRedis<T>(key);
   }
 
+  // private async fetchFromRedis<T>(key: string): Promise<CacheResponse<T>> {
+  //   return this.retryService.execute(
+  //     () =>
+  //       this.circuitBreaker.execute<T>(
+  //         async () => {
+  //           try {
+  //             const startTime = performance.now();
+  //             const value = await this.redis.getBuffer(key);
+  
+  //             if (value) {
+  //               let finalValue: Buffer;
+  //               let wasCompressed = false;
+  
+  //               try {
+  //                 finalValue = await gunzip(value);
+  //                 wasCompressed = true;
+  //               } catch {
+  //                 finalValue = value;
+  //               }
+  
+  //               const parsed = msgpack.decode(finalValue);
+  //               await this.setLocalCache(key, parsed);
+  
+  //               const endTime = performance.now();
+  //               this.logger.debug(
+  //                 `⚡ Cache hit en Redis: ${key} (${Math.round(endTime - startTime)}ms) ${
+  //                   wasCompressed ? '[Descomprimido]' : ''
+  //                 }`
+  //               );
+  
+  //               return {
+  //                 success: true,
+  //                 data: parsed,
+  //                 source: 'redis',
+  //                 details: {
+  //                   cached: true,
+  //                   responseTime: endTime - startTime,
+  //                   lastCheck: new Date().toISOString(),
+  //                   wasCompressed
+  //                 }
+  //               };
+  //             }
+  
+  //             this.logger.debug(`❓ Cache miss en Redis: ${key}`);
+  //             return {
+  //               success: false,
+  //               source: 'none',
+  //               details: {
+  //                 cached: false,
+  //                 lastCheck: new Date().toISOString()
+  //               }
+  //             };
+  //           } catch (error) {
+  //             this.logger.error(`🔥 Error en operación Redis para key ${key}:`, error.stack);
+  //             throw error;
+  //           }
+  //         },
+  //         undefined, // No usamos fallback aquí porque ya manejamos local cache en `get()`
+  //         `fetch:${key}`
+  //       ),
+  //     {
+  //       maxAttempts: 3,
+  //       context: `fetch:${key}`,
+  //       retryableErrors: [/ECONNREFUSED/, /ETIMEDOUT/, /ECONNRESET/, 'CONNECTION_ERROR', 'REDIS_NOT_CONNECTED']
+  //     }
+  //   );
+  // }
+
   private async fetchFromRedis<T>(key: string): Promise<CacheResponse<T>> {
     return this.retryService.execute(
-      () =>
-        this.circuitBreaker.execute<T>(
-          async () => {
-            try {
-              const startTime = performance.now();
-              const value = await this.redis.getBuffer(key);
+      () => this.circuitBreaker.execute<T>(
+        async () => {
+          try {
+            const startTime = performance.now();
+            const value = await this.redis.getBuffer(key);
   
-              if (value) {
-                let finalValue: Buffer;
-                let wasCompressed = false;
+            if (value) {
+              let finalValue: Buffer;
+              let wasCompressed = false;
   
-                try {
-                  finalValue = await gunzip(value);
-                  wasCompressed = true;
-                } catch {
-                  finalValue = value;
-                }
-  
-                const parsed = msgpack.decode(finalValue);
-                await this.setLocalCache(key, parsed);
-  
-                const endTime = performance.now();
-                this.logger.debug(
-                  `⚡ Cache hit en Redis: ${key} (${Math.round(endTime - startTime)}ms) ${
-                    wasCompressed ? '[Descomprimido]' : ''
-                  }`
-                );
-  
-                return {
-                  success: true,
-                  data: parsed,
-                  source: 'redis',
-                  details: {
-                    cached: true,
-                    responseTime: endTime - startTime,
-                    lastCheck: new Date().toISOString(),
-                    wasCompressed
-                  }
-                };
+              try {
+                finalValue = await gunzip(value);
+                wasCompressed = true;
+              } catch {
+                finalValue = value;
               }
   
-              this.logger.debug(`❓ Cache miss en Redis: ${key}`);
+              const parsed = msgpack.decode(finalValue);
+              await this.setLocalCache(key, parsed);
+  
+              const endTime = performance.now();
+              if (this.isDevelopment) {
+                this.logger.debug(
+                  `⚡ Cache Redis: ${key} (${Math.round(endTime - startTime)}ms)${
+                    wasCompressed ? ' [Compressed]' : ''
+                  }`
+                );
+              }
+  
               return {
-                success: false,
-                source: 'none',
+                success: true,
+                data: parsed,
+                source: 'redis',
                 details: {
-                  cached: false,
-                  lastCheck: new Date().toISOString()
+                  cached: true,
+                  responseTime: endTime - startTime,
+                  lastCheck: new Date().toISOString(),
+                  wasCompressed
                 }
               };
-            } catch (error) {
-              this.logger.error(`🔥 Error en operación Redis para key ${key}:`, error.stack);
-              throw error;
             }
-          },
-          undefined, // No usamos fallback aquí porque ya manejamos local cache en `get()`
-          `fetch:${key}`
-        ),
+  
+            if (this.isDevelopment) {
+              this.logger.debug(`❓ Cache miss: ${key}`);
+            }
+            return {
+              success: false,
+              source: 'none',
+              details: {
+                cached: false,
+                lastCheck: new Date().toISOString()
+              }
+            };
+          } catch (error) {
+            this.logger.error(`🔥 Error en Redis para key ${key}:`, error.stack);
+            throw error;
+          }
+        },
+        undefined,
+        `fetch:${key}`
+      ),
       {
         maxAttempts: 3,
         context: `fetch:${key}`,
@@ -263,22 +390,104 @@ export class CacheService {
   }
 
 
+  // async set(key: string, value: any, ttl?: number): Promise<CacheResponse> {
+  //   return this.retryService.execute(
+  //     () => this.circuitBreaker.execute(
+  //       async () => {
+  //         try {
+  //           const startTime = performance.now();
+            
+  //           // Codificamos usando msgpack
+  //           const encoded = msgpack.encode(value);
+            
+  //           // Comprimimos solo si el tamaño es mayor a 1KB
+  //           let finalData: Buffer;
+  //           let compressionApplied = false;
+            
+  //           // if (encoded.length > 1024) {
+  //           //   finalData = await gzip(encoded, { level: this.config.compression.level });
+  //           if (encoded.length > 5120) {
+  //             finalData = await gzip(encoded, { level: 4 });
+  //             compressionApplied = true;
+  //             this.updateCompressionMetrics(encoded.length, finalData.length);
+  //           } else {
+  //             finalData = encoded;
+  //           }
+            
+  //           if (ttl) {
+  //             await this.redis.setex(key, ttl, finalData);
+  //           } else {
+  //             await this.redis.set(key, finalData);
+  //           }
+            
+  //           await this.setLocalCache(key, value, ttl);
+            
+  //           const endTime = performance.now();
+  //           const compressionRatio = compressionApplied ? 
+  //             (encoded.length / finalData.length).toFixed(2) : '1.00';
+            
+  //           this.logger.debug(
+  //             `💾 Cache establecido en Redis: ${key} ` +
+  //             `(${Math.round(endTime - startTime)}ms` +
+  //             `${compressionApplied ? `, ratio compresión: ${compressionRatio}x` : ''})` 
+  //           );
+            
+  //           return { 
+  //             success: true, 
+  //             source: 'redis',
+  //             details: {
+  //               cached: true,
+  //               lastCheck: new Date().toISOString(),
+  //               responseTime: endTime - startTime,
+  //               dataSize: compressionApplied ? {
+  //                 original: encoded.length,
+  //                 compressed: finalData.length,
+  //                 ratio: Number(compressionRatio)
+  //               } : undefined
+  //             }
+  //           };
+  //         } catch (error) {
+  //           this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
+  //           throw error;
+  //         }
+  //       },
+  //       async () => {
+  //         await this.setLocalCache(key, value, ttl);
+  //         return { 
+  //           success: true, 
+  //           source: 'local',
+  //           details: {
+  //             cached: true,
+  //             lastCheck: new Date().toISOString()
+  //           }
+  //         };
+  //       },
+  //       `set:${key}`
+  //     ),
+  //     {
+  //       maxAttempts: 3,
+  //       context: `set:${key}`,
+  //       retryableErrors: [
+  //         /ECONNREFUSED/,
+  //         /ETIMEDOUT/,
+  //         /ECONNRESET/,
+  //         'CONNECTION_ERROR',
+  //         'REDIS_NOT_CONNECTED'
+  //       ]
+  //     }
+  //   );
+  // }
+
   async set(key: string, value: any, ttl?: number): Promise<CacheResponse> {
     return this.retryService.execute(
       () => this.circuitBreaker.execute(
         async () => {
           try {
             const startTime = performance.now();
-            
-            // Codificamos usando msgpack
             const encoded = msgpack.encode(value);
-            
-            // Comprimimos solo si el tamaño es mayor a 1KB
             let finalData: Buffer;
             let compressionApplied = false;
             
-            // if (encoded.length > 1024) {
-            //   finalData = await gzip(encoded, { level: this.config.compression.level });
             if (encoded.length > 5120) {
               finalData = await gzip(encoded, { level: 4 });
               compressionApplied = true;
@@ -296,14 +505,14 @@ export class CacheService {
             await this.setLocalCache(key, value, ttl);
             
             const endTime = performance.now();
-            const compressionRatio = compressionApplied ? 
-              (encoded.length / finalData.length).toFixed(2) : '1.00';
             
-            this.logger.debug(
-              `💾 Cache establecido en Redis: ${key} ` +
-              `(${Math.round(endTime - startTime)}ms` +
-              `${compressionApplied ? `, ratio compresión: ${compressionRatio}x` : ''})` 
-            );
+            if (this.isDevelopment) {
+              const compressionInfo = compressionApplied ? 
+                `, ratio: ${(encoded.length / finalData.length).toFixed(2)}x` : '';
+              this.logger.debug(
+                `💾 Cache set: ${key} (${Math.round(endTime - startTime)}ms${compressionInfo})`
+              );
+            }
             
             return { 
               success: true, 
@@ -315,7 +524,7 @@ export class CacheService {
                 dataSize: compressionApplied ? {
                   original: encoded.length,
                   compressed: finalData.length,
-                  ratio: Number(compressionRatio)
+                  ratio: Number((encoded.length / finalData.length).toFixed(2))
                 } : undefined
               }
             };
@@ -377,11 +586,67 @@ export class CacheService {
     return null;
   }
 
+  // async healthCheck(): Promise<CacheResponse<boolean>> {
+  //   try {
+  //     const pingPromise = this.redis.ping();
+  //     const timeoutPromise = new Promise((_, reject) => {
+  //       setTimeout(() => reject(new Error('Health check timeout')), 3000);
+  //     });
+  
+  //     const isPingSuccessful = await Promise.race([
+  //       pingPromise,
+  //       timeoutPromise
+  //     ]) === 'PONG';
+  
+  //     this.lastHealthCheckTime = Date.now();
+  //     this.isConnected = isPingSuccessful;
+        
+  //     if (isPingSuccessful) {
+  //       this.logger.debug('✅ Health check exitoso');
+  //       this.healthCheckStatus.consecutiveFailures = 0;
+  //     } else {
+  //       this.healthCheckStatus.consecutiveFailures++;
+  //       this.logger.warn(`⚠️ Health check fallido: No PONG (Intento ${this.healthCheckStatus.consecutiveFailures})`);
+  //     }
+        
+  //     return {
+  //       success: true,
+  //       source: 'redis' as CacheSource,
+  //       data: isPingSuccessful,
+  //       details: {
+  //         consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
+  //         cached: false,
+  //         lastCheck: new Date(this.lastHealthCheckTime).toISOString()
+  //       }
+  //     };
+  //   } catch (error) {
+  //     this.isConnected = false;
+  //     this.healthCheckStatus.consecutiveFailures++;
+  
+  //     this.logger.error('❌ Health check fallido:', {
+  //       error: error.message,
+  //       consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
+  //       timestamp: new Date().toISOString()
+  //     });
+  
+  //     throw error; // Dejar que el CircuitBreaker maneje el error
+  //   }
+  // }
+
   async healthCheck(): Promise<CacheResponse<boolean>> {
+    const now = Date.now();
+    
+    // Si el último check fue exitoso y no han pasado más de 10 segundos, retornamos el cache
+    if (this.healthCheckStatus.lastSuccessful && 
+        now - this.healthCheckStatus.lastCheckTime < 10000 &&
+        this.healthCheckStatus.lastResponse) {
+      return this.healthCheckStatus.lastResponse;
+    }
+
     try {
       const pingPromise = this.redis.ping();
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Health check timeout')), 3000);
+        setTimeout(() => reject(new Error('Health check timeout')), this.HEALTH_CHECK_TIMEOUT);
       });
   
       const isPingSuccessful = await Promise.race([
@@ -389,38 +654,81 @@ export class CacheService {
         timeoutPromise
       ]) === 'PONG';
   
-      this.lastHealthCheckTime = Date.now();
+      this.healthCheckStatus.lastCheckTime = now;
       this.isConnected = isPingSuccessful;
         
       if (isPingSuccessful) {
-        this.logger.debug('✅ Health check exitoso');
+        // Solo logueamos si hubo fallos previos y ahora se recuperó
+        if (this.healthCheckStatus.consecutiveFailures > 0) {
+          this.logger.debug('✅ Health check exitoso - Recuperado después de fallos');
+        }
         this.healthCheckStatus.consecutiveFailures = 0;
+        this.healthCheckStatus.lastSuccessful = true;
+        this.healthCheckStatus.lastError = null;
+        this.healthCheckStatus.degradedPerformance = false;
       } else {
         this.healthCheckStatus.consecutiveFailures++;
-        this.logger.warn(`⚠️ Health check fallido: No PONG (Intento ${this.healthCheckStatus.consecutiveFailures})`);
+        this.healthCheckStatus.lastSuccessful = false;
+        this.healthCheckStatus.degradedPerformance = true;
+        
+        // Solo logueamos cuando alcanzamos un umbral de fallos
+        if (this.healthCheckStatus.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+          this.logger.warn(
+            `⚠️ Health check fallido consecutivo #${this.healthCheckStatus.consecutiveFailures}`
+          );
+        }
       }
         
-      return {
-        success: true,
+      const response: CacheResponse<boolean> = {
+        success: isPingSuccessful,
         source: 'redis' as CacheSource,
         data: isPingSuccessful,
         details: {
           consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
           cached: false,
-          lastCheck: new Date(this.lastHealthCheckTime).toISOString()
+          lastCheck: new Date(this.healthCheckStatus.lastCheckTime).toISOString(),
+          degradedPerformance: this.healthCheckStatus.degradedPerformance
         }
       };
+
+      // Cacheamos la respuesta
+      this.healthCheckStatus.lastResponse = response;
+      
+      return response;
     } catch (error) {
       this.isConnected = false;
       this.healthCheckStatus.consecutiveFailures++;
+      this.healthCheckStatus.lastSuccessful = false;
+      this.healthCheckStatus.lastError = error;
+      this.healthCheckStatus.degradedPerformance = true;
   
-      this.logger.error('❌ Health check fallido:', {
+      // Solo logueamos errores cuando son diferentes al último error o cuando alcanzamos umbrales
+      if (!this.healthCheckStatus.lastError || 
+          this.healthCheckStatus.lastError.message !== error.message ||
+          this.healthCheckStatus.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+        this.logger.error('❌ Health check fallido:', {
+          error: error.message,
+          consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
+          timestamp: new Date().toISOString()
+        });
+      }
+  
+      const errorResponse: CacheResponse<boolean> = {
+        success: false,
+        source: 'none' as CacheSource,
         error: error.message,
-        consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
-        timestamp: new Date().toISOString()
-      });
-  
-      throw error; // Dejar que el CircuitBreaker maneje el error
+        details: {
+          lastError: error.message,
+          consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
+          lastCheck: new Date().toISOString(),
+          degradedPerformance: true
+        }
+      };
+
+      // Cacheamos la respuesta de error
+      this.healthCheckStatus.lastResponse = errorResponse;
+      
+      throw error;
     }
   }
 
