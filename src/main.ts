@@ -20,7 +20,10 @@ async function bootstrap() {
           durable: true,
         },
         noAck: false,
+        
+        
       },
+      
     }
   );
 

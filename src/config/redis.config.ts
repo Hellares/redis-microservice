@@ -56,22 +56,6 @@ export const compressionConfig: CompressionConfig = {
   threshold: 5120, // Comprimir solo datos mayores a 1KB
   level: 4 // Balance entre velocidad y compresión
 };
-
-// Modificar redisConfig para incluir la configuración de compresión
-// export const redisConfig: RedisOptions & { compression: CompressionConfig } = {
-//   connectTimeout: 5000,
-//   commandTimeout: 3000,
-//   maxRetriesPerRequest: 3,
-//   retryStrategy: (times: number) => {
-//     if (times > 3) {
-//       return null;
-//     }
-//     const delay = Math.min(times * 1000, 3000);
-//     return delay;
-//   },
-//   enableReadyCheck: false,
-//   lazyConnect: true,
-//   compression: compressionConfig
 export const redisConfig: RedisOptions & { compression: CompressionConfig } = {
   connectTimeout: 4000,
   commandTimeout: 3000,
