@@ -3,13 +3,13 @@ import { MicroserviceOptions, RpcException, Transport } from '@nestjs/microservi
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 import { envs } from './config/envs';
-import { CONSOLE_COLORS } from './common/constants/colors.constants';
 
 
 async function bootstrap() {
-  const logger = new Logger ( `${CONSOLE_COLORS.TEXT.MAGENTA}Redis Microservice`);
+  const nestLogger = new Logger('Redis Microservice');
 
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(
+
     AppModule,
     {
       transport: Transport.RMQ,
@@ -19,18 +19,15 @@ async function bootstrap() {
         queueOptions: {
           durable: true,
         },
-        noAck: false,
-        
-        
+        noAck: false,     
       },
-      
+      bufferLogs: true, // Añadimos bufferLogs para que muestre los logs con pino
     }
   );
 
-
   app.listen().then(() => {
-    logger.log(`${CONSOLE_COLORS.TEXT.CYAN} Redis Microservice running on ${envs.port}`);
-    logger.log(`${CONSOLE_COLORS.TEXT.GREEN} Connected to RabbitMQ`); // Añadimos log de conexión
+    nestLogger.log('Redis Microservice running on ' + envs.port);
+    nestLogger.log('Connected to RabbitMQ');
   });
 }
 bootstrap();

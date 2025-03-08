@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
 import { CacheResponse } from '../interfaces/cache-response.interface';
 
 export interface RetryOptions {
@@ -12,7 +13,8 @@ export interface RetryOptions {
 
 @Injectable()
 export class RetryService {
-  private readonly logger = new Logger(RetryService.name);
+  private readonly isDevelopment = process.env.NODE_ENV !== 'production';
+  // private readonly logger = new Logger(RetryService.name);
   
   private readonly defaultOptions: Required<RetryOptions> = {
     maxAttempts: 3,
@@ -30,6 +32,10 @@ export class RetryService {
     context: 'default'
   };
 
+  constructor(private readonly logger: PinoLogger) {
+    this.logger.setContext('RetryService');
+  }
+
   async execute<T>(
     operation: () => Promise<CacheResponse<T>>,
     options?: RetryOptions
@@ -43,10 +49,14 @@ export class RetryService {
         const result = await operation();
         
         if (attempt > 1) {
-          this.logger.log(`✅ Operación exitosa después de ${attempt} intentos`, {
-            context: finalOptions.context,
+          // this.logger.log(`✅ Operación exitosa después de ${attempt} intentos`, {
+          //   context: finalOptions.context,
+          //   attempts: attempt
+          // });
+          this.logger.info({
+            context:finalOptions.context,
             attempts: attempt
-          });
+          }, `Operación exitosa después de ${attempt} intentos`);
         }
         
         return result;
@@ -55,24 +65,35 @@ export class RetryService {
         const isRetryable = this.isRetryableError(error, finalOptions.retryableErrors);
         
         if (!isRetryable) {
-          this.logger.error(`❌ Error no recuperable en ${finalOptions.context}:`, {
-            error: error.message,
+          // this.logger.error(`❌ Error no recuperable en ${finalOptions.context}:`, {
+          //   error: error.message,
+          //   attempt,
+          //   stack: error.stack
+          // });
+          this.logger.error({
+            err: error,
             attempt,
-            stack: error.stack
-          });
+            context: finalOptions.context
+          }, `Error no recuperable`);
           throw error;
         }
         
         if (attempt === finalOptions.maxAttempts) {
-          this.logger.error(
-            `❌ Máximo de reintentos alcanzado en ${finalOptions.context}:`,
-            {
-              error: error.message,
-              attempts: attempt,
-              totalTime: this.calculateTotalTime(finalOptions)
-            }
-          );
-          
+          // this.logger.error(
+          //   `❌ Máximo de reintentos alcanzado en ${finalOptions.context}:`,
+          //   {
+          //     error: error.message,
+          //     attempts: attempt,
+          //     totalTime: this.calculateTotalTime(finalOptions)
+          //   }
+          // );
+          this.logger.error({
+            err: error,
+            attempts: attempt,
+            totalTime: this.calculateTotalTime(finalOptions),
+            context: finalOptions.context
+          }, `Máximo de reintentos alcanzado`)
+
           return {
             success: false,
             source: 'none',
@@ -85,14 +106,25 @@ export class RetryService {
           };
         }
 
-        this.logger.warn(
-          `⚠️ Intento ${attempt}/${finalOptions.maxAttempts} fallido en ${finalOptions.context}`,
-          {
-            error: error.message,
+        // Solo loguear en modo desarrollo o en intentos específicos
+        if (this.isDevelopment || attempt % 2 === 0) {
+          this.logger.warn({
+            err: error,
+            attempt,
             nextBackoff: backoff,
-            attempt
-          }
-        );
+            maxAttempts: finalOptions.maxAttempts,
+            context: finalOptions.context
+          }, `Intento fallido - reintentando`);
+        }
+
+        // this.logger.warn(
+        //   `⚠️ Intento ${attempt}/${finalOptions.maxAttempts} fallido en ${finalOptions.context}`,
+        //   {
+        //     error: error.message,
+        //     nextBackoff: backoff,
+        //     attempt
+        //   }
+        // );
         
         await this.delay(this.calculateBackoff(backoff, finalOptions));
         backoff = Math.min(

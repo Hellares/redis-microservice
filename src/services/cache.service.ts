@@ -7,6 +7,7 @@ import { RetryService } from './retry-service';
 import * as msgpack from 'msgpack-lite';
 import { promisify } from 'util';
 import * as zlib from 'zlib';
+import { PinoLogger } from 'nestjs-pino';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -20,8 +21,8 @@ interface LocalCacheEntry {
 
 @Injectable()
 export class CacheService {
-  private readonly logger = new Logger(CacheService.name);
   private readonly isDevelopment = process.env.NODE_ENV !== 'production';
+  // private readonly logger = new Logger(CacheService.name);
   private readonly redis: Redis;
   private readonly localCache: Map<string, LocalCacheEntry>;
   private isConnected = false;
@@ -52,45 +53,27 @@ export class CacheService {
   };
 
   constructor(
+    private readonly logger: PinoLogger,
     private readonly circuitBreaker: CircuitBreakerService,
     private readonly retryService: RetryService
   ) {
+    //contexto para los logs
+    this.logger.setContext('CacheService');
+
     this.config = redisConfig; // Almacenamos la configuración
     this.redis = new Redis(process.env.REDIS_URL, redisConfig);
     this.localCache = new Map();
     this.setupRedisListeners();
     this.startCleanupInterval();
   }
-
-  // private setupRedisListeners() {
-  //   this.redis.on('error', (error) => {
-  //     if (this.isConnected) {
-  //       this.isConnected = false;
-  //       this.logger.error(`❌ Conexión perdida con Redis: ${error.message}`, error.stack);
-  //       // Intentar reconectar automáticamente
-  //       setTimeout(() => this.redis.connect(), 5000);
-  //     }
-  //   });
-
-  //   this.redis.on('connect', () => {
-  //     if (!this.isConnected) {
-  //       this.isConnected = true;
-  //       this.logger.log('✅ Conexión establecida con Redis');
-  //     }
-  //   });
-
-  //   this.redis.on('ready', () => {
-  //     this.isConnected = true;
-  //     this.logger.log('🟢 Redis listo para operaciones');
-  //   });
-  // }
+  
   private setupRedisListeners() {
     this.redis.on('error', (error) => {
       if (this.isConnected) {
         this.isConnected = false;
         this.healthCheckStatus.degradedPerformance = true;
         // Solo logueamos errores de conexión cuando realmente perdemos la conexión
-        this.logger.error(`❌ Conexión perdida con Redis: ${error.message}`);
+        this.logger.error({err: error}, 'Conexion perdida con Redis');
       }
     });
 
@@ -98,13 +81,13 @@ export class CacheService {
       if (!this.isConnected) {
         this.isConnected = true;
         // Solo logueamos la reconexión si estábamos desconectados
-        this.logger.log('✅ Conexión establecida con Redis');
+        this.logger.info('Conexión establecida con Redis');
       }
     });
 
     this.redis.on('ready', () => {
       if (this.healthCheckStatus.degradedPerformance) {
-        this.logger.log('🟢 Redis recuperado y listo para operaciones');
+        this.logger.info('Redis recuperado y listo para operaciones');
         this.healthCheckStatus.degradedPerformance = false;
       }
     });
@@ -158,12 +141,18 @@ export class CacheService {
     }
   
     // Logging de resultados si hubo limpieza
-    if (cleanedEntries > 0) {
-      this.logger.debug(
-        `🧹 Cache limpiado - Total: ${cleanedEntries} entradas eliminadas ` +
-        `(TTL: ${cleanupStats.ttlExpired}, Tamaño: ${cleanupStats.sizeLimit}) ` +
-        `- Nuevo tamaño: ${this.localCache.size}`
-      );
+    if (cleanedEntries > 0 && this.isDevelopment) {
+      // this.logger.debug(
+      //   `Cache limpiado - Total: ${cleanedEntries} entradas eliminadas ` +
+      //   `(TTL: ${cleanupStats.ttlExpired}, Tamaño: ${cleanupStats.sizeLimit}) ` +
+      //   `- Nuevo tamaño: ${this.localCache.size}`
+      // );
+      this.logger.debug({
+        cleaned: cleanedEntries,
+        byTTL: cleanupStats.ttlExpired,
+        bySize: cleanupStats.sizeLimit,
+        newSize: this.localCache.size
+      }, 'Cache limpiado');
     }
   
     // Opcional: Emitir métricas para monitoreo
@@ -180,8 +169,8 @@ export class CacheService {
     ttlExpired: number;
     sizeLimit: number;
   }) {
-    // Aquí puedes integrar con tu sistema de métricas
-    // Por ejemplo: Prometheus, StatsD, etc.
+    //! Aquí puedes integrar con tu sistema de métricas
+    //! Por ejemplo: Prometheus, StatsD, etc.
   }
 
 
@@ -193,47 +182,32 @@ export class CacheService {
       this.compressionMetrics.totalSaved / 
       (this.compressionMetrics.totalCompressed * originalSize);
 
-    this.logger.debug(
-      `📊 Compresión - Ratio: ${this.compressionMetrics.lastCompressionRatio.toFixed(2)}x, ` +
-      `Ahorro: ${(originalSize - compressedSize)} bytes`
-    );
+    // this.logger.debug(
+    //   `📊 Compresión - Ratio: ${this.compressionMetrics.lastCompressionRatio.toFixed(2)}x, ` +
+    //   `Ahorro: ${(originalSize - compressedSize)} bytes`
+    // );
+    // Solo logueamos en modo desarrollo y usando el formato de objeto para eficiencia
+    if (this.isDevelopment) {
+      this.logger.debug({
+        ratio: this.compressionMetrics.lastCompressionRatio.toFixed(2),
+        saved: (originalSize - compressedSize),
+        originalSize,
+        compressedSize
+      }, 'Compresión realizada');
+    }
   }
-
-  // async get<T>(key: string): Promise<CacheResponse<T>> {
-  //   // Intentamos obtener primero desde el caché local
-  //   const localValue = this.getFromLocalCache(key);
-  //   if (localValue) {
-  //     this.logger.debug(`💾 Cache hit local: ${key}`);
-  
-  //     // Consultamos Redis en segundo plano sin bloquear la respuesta
-  //     this.fetchFromRedis<T>(key).catch((err) =>
-  //       this.logger.warn(`⚠️ Error actualizando desde Redis: ${err.message}`)
-  //     );
-  
-  //     return {
-  //       success: true,
-  //       data: localValue,
-  //       source: 'local',
-  //       details: {
-  //         cached: true,
-  //         lastCheck: new Date().toISOString()
-  //       }
-  //     };
-  //   }
-  
-  //   // Si no hay caché local, esperamos la respuesta de Redis
-  //   return this.fetchFromRedis<T>(key);
-  // }
 
   async get<T>(key: string): Promise<CacheResponse<T>> {
     const localValue = this.getFromLocalCache(key);
     if (localValue) {
       if (this.isDevelopment) {
-        this.logger.debug(`⚡ Cache local: ${key}`);
+        // this.logger.debug(`Cache local: ${key}`);
+        this.logger.debug({ key, source: 'local' }, 'Cache hit');
       }
   
       this.fetchFromRedis<T>(key).catch((err) =>
-        this.logger.warn(`⚠️ Error actualizando desde Redis: ${err.message}`)
+        // this.logger.warn(`⚠️ Error actualizando desde Redis: ${err.message}`)
+        this.logger.warn({ err, key }, 'Error actualizando desde Redis')
       );
   
       return {
@@ -250,75 +224,7 @@ export class CacheService {
     return this.fetchFromRedis<T>(key);
   }
 
-  // private async fetchFromRedis<T>(key: string): Promise<CacheResponse<T>> {
-  //   return this.retryService.execute(
-  //     () =>
-  //       this.circuitBreaker.execute<T>(
-  //         async () => {
-  //           try {
-  //             const startTime = performance.now();
-  //             const value = await this.redis.getBuffer(key);
-  
-  //             if (value) {
-  //               let finalValue: Buffer;
-  //               let wasCompressed = false;
-  
-  //               try {
-  //                 finalValue = await gunzip(value);
-  //                 wasCompressed = true;
-  //               } catch {
-  //                 finalValue = value;
-  //               }
-  
-  //               const parsed = msgpack.decode(finalValue);
-  //               await this.setLocalCache(key, parsed);
-  
-  //               const endTime = performance.now();
-  //               this.logger.debug(
-  //                 `⚡ Cache hit en Redis: ${key} (${Math.round(endTime - startTime)}ms) ${
-  //                   wasCompressed ? '[Descomprimido]' : ''
-  //                 }`
-  //               );
-  
-  //               return {
-  //                 success: true,
-  //                 data: parsed,
-  //                 source: 'redis',
-  //                 details: {
-  //                   cached: true,
-  //                   responseTime: endTime - startTime,
-  //                   lastCheck: new Date().toISOString(),
-  //                   wasCompressed
-  //                 }
-  //               };
-  //             }
-  
-  //             this.logger.debug(`❓ Cache miss en Redis: ${key}`);
-  //             return {
-  //               success: false,
-  //               source: 'none',
-  //               details: {
-  //                 cached: false,
-  //                 lastCheck: new Date().toISOString()
-  //               }
-  //             };
-  //           } catch (error) {
-  //             this.logger.error(`🔥 Error en operación Redis para key ${key}:`, error.stack);
-  //             throw error;
-  //           }
-  //         },
-  //         undefined, // No usamos fallback aquí porque ya manejamos local cache en `get()`
-  //         `fetch:${key}`
-  //       ),
-  //     {
-  //       maxAttempts: 3,
-  //       context: `fetch:${key}`,
-  //       retryableErrors: [/ECONNREFUSED/, /ETIMEDOUT/, /ECONNRESET/, 'CONNECTION_ERROR', 'REDIS_NOT_CONNECTED']
-  //     }
-  //   );
-  // }
-
-  private async fetchFromRedis<T>(key: string): Promise<CacheResponse<T>> {
+   private async fetchFromRedis<T>(key: string): Promise<CacheResponse<T>> {
     return this.retryService.execute(
       () => this.circuitBreaker.execute<T>(
         async () => {
@@ -341,12 +247,15 @@ export class CacheService {
               await this.setLocalCache(key, parsed);
   
               const endTime = performance.now();
+              const responseTime = Math.round(endTime - startTime);
+
               if (this.isDevelopment) {
-                this.logger.debug(
-                  `⚡ Cache Redis: ${key} (${Math.round(endTime - startTime)}ms)${
-                    wasCompressed ? ' [Compressed]' : ''
-                  }`
-                );
+                this.logger.debug({
+                  key,
+                  source: 'redis',
+                  responseTime,
+                  compressed: wasCompressed
+                }, 'Cache hit');
               }
   
               return {
@@ -363,7 +272,7 @@ export class CacheService {
             }
   
             if (this.isDevelopment) {
-              this.logger.debug(`❓ Cache miss: ${key}`);
+              this.logger.debug({ key }, 'Cache miss');
             }
             return {
               success: false,
@@ -374,7 +283,8 @@ export class CacheService {
               }
             };
           } catch (error) {
-            this.logger.error(`🔥 Error en Redis para key ${key}:`, error.stack);
+            // this.logger.error(`🔥 Error en Redis para key ${key}:`, error.stack);
+            this.logger.error({ err: error, key }, 'Error en Redis');
             throw error;
           }
         },
@@ -388,95 +298,6 @@ export class CacheService {
       }
     );
   }
-
-
-  // async set(key: string, value: any, ttl?: number): Promise<CacheResponse> {
-  //   return this.retryService.execute(
-  //     () => this.circuitBreaker.execute(
-  //       async () => {
-  //         try {
-  //           const startTime = performance.now();
-            
-  //           // Codificamos usando msgpack
-  //           const encoded = msgpack.encode(value);
-            
-  //           // Comprimimos solo si el tamaño es mayor a 1KB
-  //           let finalData: Buffer;
-  //           let compressionApplied = false;
-            
-  //           // if (encoded.length > 1024) {
-  //           //   finalData = await gzip(encoded, { level: this.config.compression.level });
-  //           if (encoded.length > 5120) {
-  //             finalData = await gzip(encoded, { level: 4 });
-  //             compressionApplied = true;
-  //             this.updateCompressionMetrics(encoded.length, finalData.length);
-  //           } else {
-  //             finalData = encoded;
-  //           }
-            
-  //           if (ttl) {
-  //             await this.redis.setex(key, ttl, finalData);
-  //           } else {
-  //             await this.redis.set(key, finalData);
-  //           }
-            
-  //           await this.setLocalCache(key, value, ttl);
-            
-  //           const endTime = performance.now();
-  //           const compressionRatio = compressionApplied ? 
-  //             (encoded.length / finalData.length).toFixed(2) : '1.00';
-            
-  //           this.logger.debug(
-  //             `💾 Cache establecido en Redis: ${key} ` +
-  //             `(${Math.round(endTime - startTime)}ms` +
-  //             `${compressionApplied ? `, ratio compresión: ${compressionRatio}x` : ''})` 
-  //           );
-            
-  //           return { 
-  //             success: true, 
-  //             source: 'redis',
-  //             details: {
-  //               cached: true,
-  //               lastCheck: new Date().toISOString(),
-  //               responseTime: endTime - startTime,
-  //               dataSize: compressionApplied ? {
-  //                 original: encoded.length,
-  //                 compressed: finalData.length,
-  //                 ratio: Number(compressionRatio)
-  //               } : undefined
-  //             }
-  //           };
-  //         } catch (error) {
-  //           this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
-  //           throw error;
-  //         }
-  //       },
-  //       async () => {
-  //         await this.setLocalCache(key, value, ttl);
-  //         return { 
-  //           success: true, 
-  //           source: 'local',
-  //           details: {
-  //             cached: true,
-  //             lastCheck: new Date().toISOString()
-  //           }
-  //         };
-  //       },
-  //       `set:${key}`
-  //     ),
-  //     {
-  //       maxAttempts: 3,
-  //       context: `set:${key}`,
-  //       retryableErrors: [
-  //         /ECONNREFUSED/,
-  //         /ETIMEDOUT/,
-  //         /ECONNRESET/,
-  //         'CONNECTION_ERROR',
-  //         'REDIS_NOT_CONNECTED'
-  //       ]
-  //     }
-  //   );
-  // }
 
   async set(key: string, value: any, ttl?: number): Promise<CacheResponse> {
     return this.retryService.execute(
@@ -505,13 +326,25 @@ export class CacheService {
             await this.setLocalCache(key, value, ttl);
             
             const endTime = performance.now();
+            const responseTime = Math.round(endTime - startTime);
             
+            // if (this.isDevelopment) {
+            //   const compressionInfo = compressionApplied ? 
+            //     `, ratio: ${(encoded.length / finalData.length).toFixed(2)}x` : '';
+            //   this.logger.debug(
+            //     // `💾 Cache set: ${key} (${Math.round(endTime - startTime)}ms${compressionInfo})`
+            //     `Cache set: ${key}`
+            //   );
+            // }
+            // Logging con formato de objeto
             if (this.isDevelopment) {
-              const compressionInfo = compressionApplied ? 
-                `, ratio: ${(encoded.length / finalData.length).toFixed(2)}x` : '';
-              this.logger.debug(
-                `💾 Cache set: ${key} (${Math.round(endTime - startTime)}ms${compressionInfo})`
-              );
+              this.logger.debug({
+                key,
+                responseTime,
+                compressed: compressionApplied,
+                ratio: compressionApplied ? 
+                  Number((encoded.length / finalData.length).toFixed(2)) : undefined
+              }, 'Cache set');
             }
             
             return { 
@@ -529,7 +362,8 @@ export class CacheService {
               }
             };
           } catch (error) {
-            this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
+            // this.logger.error(`🔥 Error al establecer cache para ${key}:`, error.stack);
+            this.logger.error({ err: error, key }, 'Error al establecer cache');
             throw error;
           }
         },
@@ -586,53 +420,6 @@ export class CacheService {
     return null;
   }
 
-  // async healthCheck(): Promise<CacheResponse<boolean>> {
-  //   try {
-  //     const pingPromise = this.redis.ping();
-  //     const timeoutPromise = new Promise((_, reject) => {
-  //       setTimeout(() => reject(new Error('Health check timeout')), 3000);
-  //     });
-  
-  //     const isPingSuccessful = await Promise.race([
-  //       pingPromise,
-  //       timeoutPromise
-  //     ]) === 'PONG';
-  
-  //     this.lastHealthCheckTime = Date.now();
-  //     this.isConnected = isPingSuccessful;
-        
-  //     if (isPingSuccessful) {
-  //       this.logger.debug('✅ Health check exitoso');
-  //       this.healthCheckStatus.consecutiveFailures = 0;
-  //     } else {
-  //       this.healthCheckStatus.consecutiveFailures++;
-  //       this.logger.warn(`⚠️ Health check fallido: No PONG (Intento ${this.healthCheckStatus.consecutiveFailures})`);
-  //     }
-        
-  //     return {
-  //       success: true,
-  //       source: 'redis' as CacheSource,
-  //       data: isPingSuccessful,
-  //       details: {
-  //         consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
-  //         cached: false,
-  //         lastCheck: new Date(this.lastHealthCheckTime).toISOString()
-  //       }
-  //     };
-  //   } catch (error) {
-  //     this.isConnected = false;
-  //     this.healthCheckStatus.consecutiveFailures++;
-  
-  //     this.logger.error('❌ Health check fallido:', {
-  //       error: error.message,
-  //       consecutiveFailures: this.healthCheckStatus.consecutiveFailures,
-  //       timestamp: new Date().toISOString()
-  //     });
-  
-  //     throw error; // Dejar que el CircuitBreaker maneje el error
-  //   }
-  // }
-
   async healthCheck(): Promise<CacheResponse<boolean>> {
     const now = Date.now();
     
@@ -660,7 +447,10 @@ export class CacheService {
       if (isPingSuccessful) {
         // Solo logueamos si hubo fallos previos y ahora se recuperó
         if (this.healthCheckStatus.consecutiveFailures > 0) {
-          this.logger.debug('✅ Health check exitoso - Recuperado después de fallos');
+          //this.logger.debug('✅ Health check exitoso - Recuperado después de fallos');
+          this.logger.info({
+            previousFailures: this.healthCheckStatus.consecutiveFailures
+          }, 'Health check exitoso - Recuperado después de fallos');
         }
         this.healthCheckStatus.consecutiveFailures = 0;
         this.healthCheckStatus.lastSuccessful = true;
@@ -674,7 +464,9 @@ export class CacheService {
         // Solo logueamos cuando alcanzamos un umbral de fallos
         if (this.healthCheckStatus.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
           this.logger.warn(
-            `⚠️ Health check fallido consecutivo #${this.healthCheckStatus.consecutiveFailures}`
+            // `⚠️ Health check fallido consecutivo #${this.healthCheckStatus.consecutiveFailures}`
+            { consecutiveFailures: this.healthCheckStatus.consecutiveFailures },
+            'Health check fallido consecutivo'
           );
         }
       }
@@ -692,9 +484,9 @@ export class CacheService {
       };
 
       // Cacheamos la respuesta
-      this.healthCheckStatus.lastResponse = response;
-      
+      this.healthCheckStatus.lastResponse = response;      
       return response;
+
     } catch (error) {
       this.isConnected = false;
       this.healthCheckStatus.consecutiveFailures++;
@@ -739,14 +531,14 @@ export class CacheService {
       
       // Luego intentamos limpiar Redis
       await this.redis.flushall();
-      this.logger.log('🧹 Cache completamente limpiado (local y Redis)');
+      this.logger.info('Cache completamente limpiado (local y Redis)');
       
       return {
         success: true,
         source: 'redis'
       };
     } catch (error) {
-      this.logger.error('❌ Error al limpiar cache:', error.stack);
+      this.logger.error('Error al limpiar cache:', error.stack);
       throw error;
     }
   }
@@ -757,13 +549,13 @@ export class CacheService {
         try {
           const deleted = await this.redis.del(key);
           this.localCache.delete(key);
-          this.logger.debug(`🗑️ Cache eliminado para key: ${key}`);
+          this.logger.debug(`Cache eliminado para key: ${key}`);
           return {
             success: deleted > 0,
             source: 'redis'
           };
         } catch (error) {
-          this.logger.error(`🔥 Error al eliminar cache para ${key}:`, error.stack);
+          this.logger.error(` Error al eliminar cache para ${key}:`, error.stack);
           throw error;
         }
       },
@@ -793,7 +585,7 @@ export class CacheService {
     try {
       await this.redis.quit();
       this.localCache.clear();
-      this.logger.log('👋 Desconectado de Redis y limpiado caché local');
+      this.logger.warn('Desconectado de Redis y limpiado caché local');
     } catch (error) {
       this.logger.error('❌ Error al desconectar:', error.stack);
       throw error;
@@ -819,7 +611,7 @@ export class CacheService {
         await this.redis.del(...keys);
       }
       
-      this.logger.log(`🧹 Limpiadas ${keys.length} keys con patrón: ${pattern}`);
+      this.logger.info(`Limpiadas ${keys.length} keys con patrón: ${pattern}`);
       
       return {
         success: true,
@@ -834,6 +626,5 @@ export class CacheService {
       this.logger.error(`❌ Error limpiando keys con patrón ${pattern}:`, error);
       throw error;
     }
-  }
-  
+  }  
 }
