@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import Redis from 'ioredis';
 import { CircuitBreakerService } from './circuit-breaker.service';
 import { redisConfig, RedisConfigWithCompression } from '../config/redis.config';
