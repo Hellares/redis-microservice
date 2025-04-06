@@ -81,7 +81,7 @@ export class CacheService {
       if (!this.isConnected) {
         this.isConnected = true;
         // Solo logueamos la reconexión si estábamos desconectados
-        this.logger.info('Conexión establecida con Redis');
+        this.logger.info('Conexion establecida con Redis');
       }
     });
 
