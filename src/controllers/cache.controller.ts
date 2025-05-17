@@ -5,6 +5,7 @@ import { CacheService } from '../services/cache.service';
 import { CircuitBreakerService } from '../services/circuit-breaker.service';
 import { CacheResponse } from '../interfaces/cache-response.interface';
 import { RetryService } from 'src/services/retry-service';
+import { ParsedRedisKey } from 'src/utils/redis-key-parser';
 
 @Controller()
 export class CacheController {
@@ -275,7 +276,7 @@ export class CacheController {
 
     try {
       if (this.isDevelopment) {
-        this.logger.debug({ pattern }, 'Limpiando cache por patrón');
+        this.logger.debug({ pattern }, 'Limpiando cache por patron');
       }
       
       const result = await this.retryService.execute(
@@ -294,9 +295,9 @@ export class CacheController {
       return result;
     } catch (error) {
       await this.safeAck(channel, originalMsg);
-      this.logger.error({ err: error, pattern }, 'Error limpiando cache por patrón');
+      this.logger.error({ err: error, pattern }, 'Error limpiando cache por patron');
       throw new RpcException({
-        message: 'Error limpiando cache por patrón',
+        message: 'Error limpiando cache por patron',
         error: error.message,
       });
     }
@@ -312,4 +313,235 @@ export class CacheController {
       this.logger.error({ err: ackError }, 'Error en ACK');
     }
   }
+
+
+  //************************************************************ */ */
+
+  // Métodos a añadir en cache.controller.ts
+@MessagePattern({ cmd: 'cache.clearByEntity' })
+async clearByEntity(@Payload() data: { entityType: string, entityId: string }, @Ctx() context: RmqContext) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug({ entityType: data.entityType, entityId: data.entityId }, 'Limpiando cache por entidad');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearByEntity(data.entityType, data.entityId),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-entity:${data.entityType}:${data.entityId}`
+      ),
+      {
+        context: `controller:clear-entity:${data.entityType}:${data.entityId}`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, entityType: data.entityType, entityId: data.entityId }, 'Error limpiando cache por entidad');
+    throw new RpcException({
+      message: 'Error limpiando cache por entidad',
+      error: error.message,
+    });
+  }
+}
+
+@MessagePattern({ cmd: 'cache.clearByKeySegments' })
+async clearByKeySegments(@Payload() segments: string[], @Ctx() context: RmqContext) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug({ segments }, 'Limpiando cache por segmentos de clave');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearByKeySegments(segments),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-segments:${segments.join(':')}`
+      ),
+      {
+        context: `controller:clear-segments:${segments.join(':')}`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, segments }, 'Error limpiando cache por segmentos de clave');
+    throw new RpcException({
+      message: 'Error limpiando cache por segmentos de clave',
+      error: error.message,
+    });
+  }
+}
+
+
+
+@MessagePattern({ cmd: 'cache.clearByKeyComponents' })
+async clearByKeyComponents(@Payload() components: Partial<ParsedRedisKey>, @Ctx() context: RmqContext) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug({ components }, 'Limpiando cache por componentes');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearByKeyComponents(components),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-components`
+      ),
+      {
+        context: `controller:clear-components`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, components }, 'Error limpiando cache por componentes');
+    throw new RpcException({
+      message: 'Error limpiando cache por componentes',
+      error: error.message,
+    });
+  }
+}
+
+@MessagePattern({ cmd: 'cache.clearBySimilarKeys' })
+async clearBySimilarKeys(
+  @Payload() data: { sampleKey: string, filterComponents: Array<keyof ParsedRedisKey> },
+  @Ctx() context: RmqContext
+) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug({ sampleKey: data.sampleKey, filterComponents: data.filterComponents }, 
+                        'Limpiando cache por clave similar');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearBySimilarKeys(data.sampleKey, data.filterComponents),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-similar:${data.sampleKey}`
+      ),
+      {
+        context: `controller:clear-similar`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, data }, 'Error limpiando cache por clave similar');
+    throw new RpcException({
+      message: 'Error limpiando cache por clave similar',
+      error: error.message,
+    });
+  }
+}
+
+@MessagePattern({ cmd: 'cache.clearByMainEntity' })
+async clearByMainEntity(
+  @Payload() data: { entityType: string, entityId: string },
+  @Ctx() context: RmqContext
+) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug({ entityType: data.entityType, entityId: data.entityId }, 
+                        'Limpiando cache por entidad principal');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearByMainEntity(data.entityType, data.entityId),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-main-entity:${data.entityType}:${data.entityId}`
+      ),
+      {
+        context: `controller:clear-main-entity`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, data }, 'Error limpiando cache por entidad principal');
+    throw new RpcException({
+      message: 'Error limpiando cache por entidad principal',
+      error: error.message,
+    });
+  }
+}
+
+@MessagePattern({ cmd: 'cache.clearByEntityPair' })
+async clearByEntityPair(
+  @Payload() data: { 
+    entityType: string, 
+    entityId: string, 
+    subEntityType: string, 
+    subEntityId: string 
+  },
+  @Ctx() context: RmqContext
+) {
+  const channel = context.getChannelRef();
+  const originalMsg = context.getMessage();
+
+  try {
+    if (this.isDevelopment) {
+      this.logger.debug(data, 'Limpiando cache por par de entidades');
+    }
+    
+    const result = await this.retryService.execute(
+      () => this.circuitBreaker.execute(
+        () => this.cacheService.clearByEntityPair(
+          data.entityType, 
+          data.entityId, 
+          data.subEntityType, 
+          data.subEntityId
+        ),
+        async () => ({ success: false, source: 'none' } as CacheResponse<void>),
+        `clear-entity-pair:${data.entityType}:${data.entityId}:${data.subEntityType}:${data.subEntityId}`
+      ),
+      {
+        context: `controller:clear-entity-pair`,
+        maxAttempts: 2
+      }
+    );
+
+    await this.safeAck(channel, originalMsg);
+    return result;
+  } catch (error) {
+    await this.safeAck(channel, originalMsg);
+    this.logger.error({ err: error, data }, 'Error limpiando cache por par de entidades');
+    throw new RpcException({
+      message: 'Error limpiando cache por par de entidades',
+      error: error.message,
+    });
+  }
+}
 }

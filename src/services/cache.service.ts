@@ -9,6 +9,9 @@ import { promisify } from 'util';
 import * as zlib from 'zlib';
 import { PinoLogger } from 'nestjs-pino';
 
+import { buildRedisPattern, ParsedRedisKey, parseRedisKey } from 'src/utils/redis-key-parser';
+import { REDIS_ENTITIES, REDIS_PATTERNS } from '../constants/redis-entities.constants';
+
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
@@ -201,7 +204,7 @@ export class CacheService {
     const localValue = this.getFromLocalCache(key);
     if (localValue) {
       if (this.isDevelopment) {
-        // this.logger.debug(`Cache local: ${key}`);
+        this.logger.debug(`Cache local: ${key}`);
         this.logger.debug({ key, source: 'local' }, 'Cache hit');
       }
   
@@ -524,6 +527,7 @@ export class CacheService {
     }
   }
 
+  //! Método para limpiar el caché de Redis y local cuando se reinicia el Gateway
   async clearCache(): Promise<CacheResponse<void>> {
     try {
       // Primero limpiamos el caché local
@@ -603,15 +607,30 @@ export class CacheService {
     };
   }
 
+ 
   async clearByPattern(pattern: string): Promise<CacheResponse<void>> {
     try {
-      // Usar SCAN en lugar de KEYS para producción
+      // Primero limpiar la caché local
+      let localKeysDeleted = 0;
+      const regexPattern = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+      
+      // Iterar sobre las claves de caché local y eliminar las que coincidan
+      for (const key of Array.from(this.localCache.keys())) {
+        if (regexPattern.test(key)) {
+          this.localCache.delete(key);
+          localKeysDeleted++;
+        }
+      }
+      
+      this.logger.info(`Limpiadas ${localKeysDeleted} keys locales con patron: ${pattern}`);
+      
+      // Luego limpiar en Redis
       const keys = await this.redis.keys(pattern);
       if (keys.length > 0) {
         await this.redis.del(...keys);
       }
       
-      this.logger.info(`Limpiadas ${keys.length} keys con patrón: ${pattern}`);
+      this.logger.info(`Limpiadas ${keys.length} keys en Redis con patron: ${pattern}`);
       
       return {
         success: true,
@@ -619,12 +638,279 @@ export class CacheService {
         details: {
           responseTime: 0,
           lastCheck: new Date().toISOString(),
-          keysDeleted: keys.length
+          keysDeleted: keys.length,
+          localKeysDeleted
         }
       };
     } catch (error) {
       this.logger.error(`❌ Error limpiando keys con patrón ${pattern}:`, error);
       throw error;
     }
-  }  
+  } 
+
+  //************************************************************************************************************** */
+
+  // Método a añadir en cache.service.ts
+async clearByEntity(entityType: string, entityId: string): Promise<CacheResponse<void>> {
+  try {
+    // Construir el patrón basado en el tipo de entidad y el ID
+    const pattern = `${entityType}:${entityId}:*`;
+    
+    // Primero limpiar la caché local
+    let localKeysDeleted = 0;
+    const regexPattern = new RegExp(`^${entityType}:${entityId}:`);
+    
+    // Iterar sobre las claves de caché local y eliminar las que coincidan
+    for (const key of Array.from(this.localCache.keys())) {
+      if (regexPattern.test(key)) {
+        this.localCache.delete(key);
+        localKeysDeleted++;
+      }
+    }
+    
+    if (localKeysDeleted > 0) {
+      this.logger.info(`Limpiadas ${localKeysDeleted} keys locales para entidad ${entityType}:${entityId}`);
+    }
+    
+    // Luego limpiar en Redis
+    const keys = await this.redis.keys(pattern);
+    if (keys.length > 0) {
+      await this.redis.del(...keys);
+      this.logger.info(`Limpiadas ${keys.length} keys en Redis para entidad ${entityType}:${entityId}`);
+    }
+    
+    return {
+      success: true,
+      source: 'redis',
+      details: {
+        responseTime: 0,
+        lastCheck: new Date().toISOString(),
+        keysDeleted: keys.length,
+        localKeysDeleted
+      }
+    };
+  } catch (error) {
+    this.logger.error(`❌ Error limpiando keys para entidad ${entityType}:${entityId}:`, error);
+    throw error;
+  }
+}
+
+// También podemos añadir un método más versátil para limpiar por partes específicas de la clave
+async clearByKeySegments(segments: string[]): Promise<CacheResponse<void>> {
+  try {
+    // Construir el patrón con los segmentos proporcionados
+    const pattern = segments.join(':') + ':*';
+    
+    // Limpiar la caché local
+    let localKeysDeleted = 0;
+    const regexPattern = new RegExp(`^${segments.join(':')}`);
+    
+    // Iterar sobre las claves de caché local y eliminar las que coincidan
+    for (const key of Array.from(this.localCache.keys())) {
+      if (regexPattern.test(key)) {
+        this.localCache.delete(key);
+        localKeysDeleted++;
+      }
+    }
+    
+    if (localKeysDeleted > 0) {
+      this.logger.info(`Limpiadas ${localKeysDeleted} keys locales con segmentos ${segments.join(':')}`);
+    }
+    
+    // Luego limpiar en Redis
+    const keys = await this.redis.keys(pattern);
+    if (keys.length > 0) {
+      await this.redis.del(...keys);
+      this.logger.info(`Limpiadas ${keys.length} keys en Redis con segmentos ${segments.join(':')}`);
+    }
+    
+    return {
+      success: true,
+      source: 'redis',
+      details: {
+        responseTime: 0,
+        lastCheck: new Date().toISOString(),
+        keysDeleted: keys.length,
+        localKeysDeleted
+      }
+    };
+  } catch (error) {
+    this.logger.error(`❌ Error limpiando keys con segmentos ${segments.join(':')}:`, error);
+    throw error;
+  }
+}
+
+
+/**
+ * Limpia el caché basado en componentes específicos de la clave
+ * Esto permite una limpieza más precisa y flexible
+ * 
+ * @param components Los componentes para construir el patrón de limpieza
+ */
+async clearByKeyComponents(components: Partial<ParsedRedisKey>): Promise<CacheResponse<void>> {
+  try {
+    const pattern = buildRedisPattern(components);
+    
+    // Primero limpiar la caché local
+    let localKeysDeleted = 0;
+    let regexPattern: RegExp;
+    
+    try {
+      // Convertir el patrón de Redis a una expresión regular
+      const regexStr = '^' + pattern
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]')
+        .replace(/\./g, '\\.');
+        
+      regexPattern = new RegExp(regexStr);
+    } catch (regexError) {
+      this.logger.warn({ err: regexError, pattern }, 'Error creando regex para limpieza local, usando limpieza básica');
+      regexPattern = new RegExp('.*'); // Fallback a un patrón que no hará match con nada
+    }
+    
+    // Iterar sobre las claves de caché local y eliminar las que coincidan
+    for (const key of Array.from(this.localCache.keys())) {
+      if (regexPattern.test(key)) {
+        this.localCache.delete(key);
+        localKeysDeleted++;
+      }
+    }
+    
+    if (localKeysDeleted > 0) {
+      this.logger.info(`Limpiadas ${localKeysDeleted} keys locales con patrón: ${pattern}`);
+    }
+    
+    // Luego limpiar en Redis
+    const keys = await this.redis.keys(pattern);
+    if (keys.length > 0) {
+      await this.redis.del(...keys);
+      this.logger.info(`Limpiadas ${keys.length} keys en Redis con patrón: ${pattern}`);
+    }
+    
+    return {
+      success: true,
+      source: 'redis',
+      details: {
+        responseTime: 0,
+        lastCheck: new Date().toISOString(),
+        keysDeleted: keys.length,
+        localKeysDeleted
+      }
+    };
+  } catch (error) {
+    this.logger.error({ err: error, components }, 'Error limpiando cache por componentes');
+    throw error;
+  }
+}
+
+/**
+ * Analiza una clave de ejemplo y limpia todas las claves que coincidan con los mismos
+ * componentes especificados en filterComponents
+ * 
+ * @param sampleKey Una clave de ejemplo para analizar
+ * @param filterComponents Qué componentes de la clave usar para el filtrado
+ */
+async clearBySimilarKeys(sampleKey: string, filterComponents: Array<keyof ParsedRedisKey>): Promise<CacheResponse<void>> {
+  try {
+    const parsedKey = parseRedisKey(sampleKey);
+    const filterPattern: Partial<ParsedRedisKey> = {};
+    
+    // Solo incluir los componentes especificados en filterComponents
+    for (const component of filterComponents) {
+      if (component in parsedKey) {
+        // Método seguro para asignar valores según el tipo de componente
+        switch (component) {
+          case 'entityType':
+          case 'entityId':
+          case 'subEntityType':
+          case 'subEntityId':
+          case 'operation':
+          case 'originalKey':
+            filterPattern[component] = parsedKey[component];
+            break;
+          case 'pagination':
+            if (parsedKey.pagination) {
+              filterPattern.pagination = { ...parsedKey.pagination };
+            }
+            break;
+          case 'rawSegments':
+            if (Array.isArray(parsedKey.rawSegments)) {
+              filterPattern.rawSegments = [...parsedKey.rawSegments];
+            }
+            break;
+          default:
+            // Para cualquier otro caso que pueda surgir en el futuro
+            // No hacer nada para evitar errores de tipo
+            break;
+        }
+      }
+    }
+    
+    // Si no hay componentes para filtrar, lanzar error
+    if (Object.keys(filterPattern).length === 0) {
+      throw new Error(`No se encontraron componentes válidos en la clave de ejemplo: ${sampleKey}`);
+    }
+    
+    return this.clearByKeyComponents(filterPattern);
+  } catch (error) {
+    this.logger.error({ err: error, sampleKey, filterComponents }, 'Error limpiando cache por clave similar');
+    throw error;
+  }
+}
+
+/**
+ * Limpia todas las claves relacionadas con una entidad principal específica
+ * 
+ * @param entityType Tipo de entidad (ej: "SERVICIO")
+ * @param entityId ID de la entidad (ej: "123")
+ */
+async clearByMainEntity(entityType: string, entityId: string): Promise<CacheResponse<void>> {
+  return this.clearByKeyComponents({
+    entityType,
+    entityId
+  });
+}
+
+/**
+ * Limpia todas las claves relacionadas con una subentidad específica
+ * independientemente de la entidad principal
+ * 
+ * @param subEntityType Tipo de subentidad (ej: "SERV")
+ * @param subEntityId ID de la subentidad (ej: "456")
+ */
+async clearBySubEntity(subEntityType: string, subEntityId: string): Promise<CacheResponse<void>> {
+  return this.clearByKeyComponents({
+    subEntityType,
+    subEntityId
+  });
+}
+
+/**
+ * Limpia todas las claves para una combinación específica de entidad y subentidad
+ * 
+ * @param entityType Tipo de entidad principal
+ * @param entityId ID de la entidad principal
+ * @param subEntityType Tipo de subentidad
+ * @param subEntityId ID de la subentidad
+ */
+async clearByEntityPair(
+  entityType: string, 
+  entityId: string, 
+  subEntityType: string, 
+  subEntityId: string
+): Promise<CacheResponse<void>> {
+  return this.clearByKeyComponents({
+    entityType,
+    entityId,
+    subEntityType,
+    subEntityId
+  });
+}
+
+
+//*********************** */
+
+
 }

@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  redis-microservice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: redis-microservice
+    restart: always
+    env_file:
+      - .env
+    networks:
+      - microservices_network
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "3003:3003"
+
+networks:
+  microservices_network:
+    external: true

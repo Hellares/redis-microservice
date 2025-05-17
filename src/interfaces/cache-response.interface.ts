@@ -15,6 +15,7 @@ export interface CacheResponse<T = unknown> {
     attempts?: number;  // Añadimos este campo
     context?: string; 
     keysDeleted?: number  // También añadimos este para el contexto,
+    localKeysDeleted?: number; // Añadimos esta propiedad
     degradedPerformance?: boolean; // Añadimos este campo
   };
 }
