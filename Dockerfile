@@ -22,8 +22,8 @@ FROM node:18-alpine AS production
 # Definir variables de entorno predeterminadas que pueden ser sobrescritas
 ENV NODE_ENV=production
 ENV PORT=3003
-ENV REDIS_URL=redis://default:jtorres@161.132.50.183:6379
-ENV RABBITMQ_SERVERS=amqp://jtorres:jtorres159.@161.132.50.183:5672
+ENV REDIS_URL=redis://default:jtorres@elastika-redis:6379
+ENV RABBITMQ_SERVERS=amqp://admin:admin123@rabbitmq-server:5672
 ENV CIRCUIT_BREAKER_THRESHOLD=2
 ENV CIRCUIT_BREAKER_TIMEOUT=30000
 

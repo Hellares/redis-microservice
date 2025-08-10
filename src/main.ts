@@ -1,8 +1,9 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, RpcException, Transport } from '@nestjs/microservices';
 import { AppModule } from './app.module';
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { envs } from './config/envs';
+
 
 
 async function bootstrap() {
@@ -28,6 +29,10 @@ async function bootstrap() {
       bufferLogs: true, // Añadimos bufferLogs para que muestre los logs con pino
     }
   );
+
+
+    
+  
 
   app.listen().then(() => {
     nestLogger.log('Redis Microservice running on ' + envs.port);

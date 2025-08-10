@@ -10,12 +10,12 @@ services:
     env_file:
       - .env
     networks:
-      - microservices_network
+      - elastika-network
     volumes:
       - ./logs:/app/logs
     ports:
       - "3003:3003"
 
 networks:
-  microservices_network:
+  elastika-network:
     external: true
